@@ -34,6 +34,8 @@ struct Options {
     only_char: bool,
     #[structopt(short, long, help = "Detect if section has appears multiple times.")]
     detect: bool,
+    #[structopt(short, long, parse(from_os_str))]
+    test: Option<PathBuf>,
     #[structopt(index = 1, required = true, name = "FILE1", parse(from_os_str))]
     input: PathBuf,
     #[structopt(index = 2, required = true, name = "FILE2", parse(from_os_str))]
@@ -140,7 +142,7 @@ fn build_patch(opt: &Options) -> std::io::Result<()> {
     if patch.sections.len() > 0 {
         for i in 0..patch.sections.len() {
             let mut section = &mut patch.sections[i];
-            grow_section(&mut section, &input, &patched);
+            grow_section(&mut section, &input, &patched, opt)?;
         }
     }
 
@@ -164,24 +166,28 @@ fn build_patch(opt: &Options) -> std::io::Result<()> {
 }
 
 /// Grow sections if they appear many times on the base file.
-fn grow_section(section: &mut PatchSection, input: &[u8], patched: &[u8]) {
+fn grow_section(section: &mut PatchSection, input: &[u8], patched: &[u8], opt: &Options) -> std::io::Result<()> {
     let mut new_section = section.clone();
     let max_grow = 10;
     let mut after = 0;
     let mut section_done = false;
+    let test_file = match &opt.test {
+        Some(x) => fs::read(x)?,
+        None => input.to_vec(),
+    };
     while after < max_grow && !section_done {
         let mut i = 0;
         let mut section_count = 0;
-        while i < input.len() {
+        while i < test_file.len() {
             if section_count > 1 {
                 break;
             }
 
-            if input[i] == new_section.search[0] {
+            if test_file[i] == new_section.search[0] {
                 let mut valid_section = true;
                 // Validate section
                 for j in 0..new_section.search.len() {
-                    if i + j >= input.len() || input[i + j] != new_section.search[j] {
+                    if i + j >= test_file.len() || test_file[i + j] != new_section.search[j] {
                         valid_section = false;
                         break;
                     }
@@ -228,6 +234,7 @@ fn grow_section(section: &mut PatchSection, input: &[u8], patched: &[u8]) {
                 section.search
             );
     }
+    Ok(())
 }
 
 /// Append an extra byte from the source files
