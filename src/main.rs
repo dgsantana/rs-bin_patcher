@@ -80,7 +80,10 @@ fn build_patch(opt: &Options) -> std::io::Result<()> {
 
     if input_size.len() != patched_size.len() {
         println!("Different file sizes.");
-        return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "File size mismatch."));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "File size mismatch.",
+        ));
     }
 
     let input = fs::read(&opt.input)?;
@@ -97,7 +100,7 @@ fn build_patch(opt: &Options) -> std::io::Result<()> {
     println!("Scanning files for differences...");
 
     for i in 0..input.len() {
-        let valid = !opt.only_char || (opt.only_char && input[i] >= 0x30 && input[i] <= 0x71);
+        let valid = input[i] >= 0x30 && input[i] <= 0x71 || !opt.only_char;
         if input[i] != patched[i] && valid {
             if !patching && !fail_continue {
                 patching = true;
@@ -140,7 +143,7 @@ fn build_patch(opt: &Options) -> std::io::Result<()> {
     }
 
     println!("Fixing small sections...");
-    if patch.sections.len() > 0 {
+    if !patch.sections.is_empty() {
         for i in 0..patch.sections.len() {
             let mut section = &mut patch.sections[i];
             grow_section(&mut section, &input, &patched, opt)?;
@@ -167,7 +170,12 @@ fn build_patch(opt: &Options) -> std::io::Result<()> {
 }
 
 /// Grow sections if they appear many times on the base file.
-fn grow_section(section: &mut PatchSection, input: &[u8], patched: &[u8], opt: &Options) -> std::io::Result<()> {
+fn grow_section(
+    section: &mut PatchSection,
+    input: &[u8],
+    patched: &[u8],
+    opt: &Options,
+) -> std::io::Result<()> {
     let mut new_section = section.clone();
     let max_grow = 10;
     let mut after = 0;
@@ -211,46 +219,43 @@ fn grow_section(section: &mut PatchSection, input: &[u8], patched: &[u8], opt: &
     }
     if section_done && after > 0 {
         println!("Fixed Section {:02}", new_section.id);
-            println!(
-                "Old Section {} search pattern: {:02X?}",
-                section.id,
-                &section.search
-            );
+        println!(
+            "Old Section {} search pattern: {:02X?}",
+            section.id, &section.search
+        );
         section.start = new_section.start;
         section.end = new_section.end;
         section.search.clear();
         section.data.clear();
         section.search.append(&mut new_section.search);
         section.data.append(&mut new_section.data);
-            println!(
-                "New Section {} search pattern: {:02X?}",
-                section.id,
-                &section.search
-            );
+        println!(
+            "New Section {} search pattern: {:02X?}",
+            section.id, &section.search
+        );
     } else if after > 0 {
         println!("Fixed Section {:02}", new_section.id);
-            println!(
-                "Old Section {} search pattern: {:02X?}",
-                section.id,
-                section.search
-            );
+        println!(
+            "Old Section {} search pattern: {:02X?}",
+            section.id, section.search
+        );
     }
     Ok(())
 }
 
 /// Append an extra byte from the source files
 fn section_append(section: &mut PatchSection, input: &[u8], patched: &[u8], amount: usize) {
-    let mut after_search = input[(section.end + 1)
-        ..=(std::cmp::min(section.end + amount, input.len()))]
+    let mut after_search = input
+        [(section.end + 1)..=(std::cmp::min(section.end + amount, input.len()))]
         .to_vec()
         .clone();
-    let mut after_data = patched[(section.end + 1)
-        ..=(std::cmp::min(section.end + amount, input.len()))]
+    let mut after_data = patched
+        [(section.end + 1)..=(std::cmp::min(section.end + amount, input.len()))]
         .to_vec()
         .clone();
     section.search.append(&mut after_search);
     section.data.append(&mut after_data);
-    section.end = section.end + amount;
+    section.end += amount;
 }
 
 /// Merge sections that overlap with a lazy strategy
@@ -267,10 +272,12 @@ fn section_merge(patch: &mut Patch) -> bool {
         if s1 >= s2 {
             let start = new_patch.sections[i].end - new_patch.sections[i].start;
             let end = new_patch.sections[i + 1].end - new_patch.sections[i].end;
-            let mut new_search = new_patch.sections[i + 1].search[start..=end].to_vec().clone();
+            let mut new_search = new_patch.sections[i + 1].search[start..=end]
+                .to_vec()
+                .clone();
             new_patch.sections[i].search.append(&mut new_search);
             new_patch.sections[i].end = new_patch.sections[i + 1].end;
-            
+
             let mut new_data = new_patch.sections[i + 1].data[start..=end].to_vec().clone();
             new_patch.sections[i].data.append(&mut new_data);
             new_patch.sections.remove(i + 1);
@@ -280,7 +287,10 @@ fn section_merge(patch: &mut Patch) -> bool {
         }
     }
     if new_patch.sections.len() < patch.sections.len() {
-        println!("Merged {} sections.", patch.sections.len() - new_patch.sections.len());
+        println!(
+            "Merged {} sections.",
+            patch.sections.len() - new_patch.sections.len()
+        );
         patch.sections.clear();
         patch.sections.append(&mut new_patch.sections);
     }
