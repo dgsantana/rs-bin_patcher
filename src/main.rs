@@ -1,4 +1,4 @@
-#![warn(clippy:all)]
+#![warn(clippy::all)]
 use clap::arg_enum;
 use serde::{Deserialize, Serialize};
 use std::fs;
