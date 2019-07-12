@@ -35,6 +35,8 @@ struct Options {
     only_char: bool,
     #[structopt(short, long, help = "Detect if section has appears multiple times.")]
     detect: bool,
+    #[structopt(short, long, default_value="10", help = "How much to grow and there are many duplicates.")]
+    grow: usize,
     #[structopt(short, long, parse(from_os_str))]
     test: Option<PathBuf>,
     #[structopt(index = 1, required = true, name = "FILE1", parse(from_os_str))]
@@ -148,6 +150,9 @@ fn build_patch(opt: &Options) -> std::io::Result<()> {
             let mut section = &mut patch.sections[i];
             grow_section(&mut section, &input, &patched, opt)?;
         }
+        let mut sections: Vec<PatchSection> = patch.sections.iter().cloned().filter(|s| !s.search.is_empty()).collect();
+        patch.sections.clear();
+        patch.sections.append(&mut sections);
     }
 
     println!("Merging sections...");
@@ -177,14 +182,16 @@ fn grow_section(
     opt: &Options,
 ) -> std::io::Result<()> {
     let mut new_section = section.clone();
-    let max_grow = 10;
+    let max_grow = opt.grow;
     let mut after = 0;
     let mut section_done = false;
     let test_file = match &opt.test {
         Some(x) => fs::read(x)?,
         None => input.to_vec(),
     };
-    while after < max_grow && !section_done {
+    let mut strategy = 0;
+    let mut ping_pong = false;
+    while after <= max_grow {
         let mut i = 0;
         let mut section_count = 0;
         while i < test_file.len() {
@@ -210,11 +217,37 @@ fn grow_section(
             i += 1;
         }
         if section_count > 1 {
-            // println!("Detected more than one Section {:02}. Adding one extra byte.", new_section.id);
             after += 1;
-            section_append(&mut new_section, input, patched, 1);
-        } else {
+            if strategy == 0 {
+                section_append(&mut new_section, input, patched, 1);
+            } else if strategy == 1 {
+                section_preappend(&mut new_section, input, patched);
+            } else {
+                if ping_pong {
+                    section_append(&mut new_section, input, patched, 1);
+                } else {
+                    section_preappend(&mut new_section, input, patched);
+                }
+                ping_pong = !ping_pong;
+            }
+        } else if section_count == 1 {
             section_done = true;
+            break;
+        } else if section_count == 0 {
+            if strategy == 2 {
+                println!("Failed to apply patch after growing {}.", after);
+                if opt.test.is_some() {
+                    println!("Test file may not contain this section.");
+                    println!("Removing section {}.", section.id);
+                    section.search.clear();
+                    section.data.clear();
+                }
+                break;
+            }
+            println!("Switching strategy.");
+            strategy += 1;
+            after = 0;
+            new_section = section.clone();
         }
     }
     if section_done && after > 0 {
@@ -234,9 +267,9 @@ fn grow_section(
             section.id, &section.search
         );
     } else if after > 0 {
-        println!("Fixed Section {:02}", new_section.id);
+        println!("Failed to fix Section {:02}", new_section.id);
         println!(
-            "Old Section {} search pattern: {:02X?}",
+            "Section {} search pattern: {:02X?}",
             section.id, section.search
         );
     }
@@ -256,6 +289,15 @@ fn section_append(section: &mut PatchSection, input: &[u8], patched: &[u8], amou
     section.search.append(&mut after_search);
     section.data.append(&mut after_data);
     section.end += amount;
+}
+
+/// Append an extra byte from the source files
+fn section_preappend(section: &mut PatchSection, input: &[u8], patched: &[u8]) {
+    if section.start > 0 {
+        section.search.insert(0, input[section.start - 1]);
+        section.data.insert(0, patched[section.start - 1]);
+        section.start -= 1;
+    }
 }
 
 /// Merge sections that overlap with a lazy strategy
@@ -317,12 +359,13 @@ fn apply_patch(opt: &Options) -> std::io::Result<()> {
     if opt.detect {
         for (k, section) in patch.sections.iter().enumerate() {
             i = 0;
+            section_count = 0;
             while i < input.len() {
                 if input[i] == section.search[0] {
                     let mut valid_section = true;
                     // Validate section
                     for j in 0..section.search.len() {
-                        if input[i + j] != section.search[j] {
+                        if i + j >= input.len() || input[i + j] != section.search[j] {
                             valid_section = false;
                             break;
                         }
