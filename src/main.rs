@@ -151,8 +151,10 @@ fn build_patch(opt: &Options) -> std::io::Result<()> {
             grow_section(&mut section, &input, &patched, opt)?;
         }
         let mut sections: Vec<PatchSection> = patch.sections.iter().cloned().filter(|s| !s.search.is_empty()).collect();
-        patch.sections.clear();
-        patch.sections.append(&mut sections);
+        if sections.len() != patch.sections.len() {
+            patch.sections.clear();
+            patch.sections.append(&mut sections);
+        }
     }
 
     println!("Merging sections...");
