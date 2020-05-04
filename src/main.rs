@@ -1,4 +1,4 @@
-#![warn(clippy::all)]
+#![warn(clippy::all, rust_2018_idioms)]
 use clap::arg_enum;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -19,7 +19,7 @@ struct Options {
     #[structopt(
         short,
         long,
-        raw(possible_values = "&Mode::variants()"),
+        possible_values = &Mode::variants(),
         case_insensitive = true,
         default_value = "Diff"
     )]
@@ -35,7 +35,12 @@ struct Options {
     only_char: bool,
     #[structopt(short, long, help = "Detect if section has appears multiple times.")]
     detect: bool,
-    #[structopt(short, long, default_value="10", help = "How much to grow and there are many duplicates.")]
+    #[structopt(
+        short,
+        long,
+        default_value = "10",
+        help = "How much to grow and there are many duplicates."
+    )]
     grow: usize,
     #[structopt(short, long, parse(from_os_str))]
     test: Option<PathBuf>,
@@ -144,35 +149,43 @@ fn build_patch(opt: &Options) -> std::io::Result<()> {
         }
     }
 
-    println!("Fixing small sections...");
     if !patch.sections.is_empty() {
+        println!("Fixing small sections...");
         for i in 0..patch.sections.len() {
             let mut section = &mut patch.sections[i];
             grow_section(&mut section, &input, &patched, opt)?;
         }
-        let mut sections: Vec<PatchSection> = patch.sections.iter().cloned().filter(|s| !s.search.is_empty()).collect();
+        let mut sections: Vec<PatchSection> = patch
+            .sections
+            .iter()
+            .cloned()
+            .filter(|s| !s.search.is_empty())
+            .collect();
         if sections.len() != patch.sections.len() {
             patch.sections.clear();
             patch.sections.append(&mut sections);
         }
+
+        println!("Merging sections...");
+        section_merge(&mut patch);
+        println!("Final patch has {} sections.", &patch.sections.len());
+
+        let mut patch_filename = match &opt.output {
+            Some(x) => x.clone(),
+            None => opt.input.clone(),
+        };
+        patch_filename.set_extension("rbp");
+
+        let coded = bincode::serialize(&patch).unwrap();
+        fs::write(&patch_filename, coded)?;
+
+        let coded = serde_json::to_string(&patch)?;
+        patch_filename.set_extension("json");
+        fs::write(&patch_filename, coded)?;
+    } else {
+        println!("No patch could be generated...");
     }
 
-    println!("Merging sections...");
-    section_merge(&mut patch);
-
-    println!("Final patch has {} sections.", &patch.sections.len());
-    let mut patch_filename = match &opt.output {
-        Some(x) => x.clone(),
-        None => opt.input.clone(),
-    };
-    patch_filename.set_extension("rbp");
-
-    let coded = bincode::serialize(&patch).unwrap();
-    fs::write(&patch_filename, coded)?;
-
-    let coded = serde_json::to_string(&patch)?;
-    patch_filename.set_extension("json");
-    fs::write(&patch_filename, coded)?;
     Ok(())
 }
 
@@ -433,7 +446,10 @@ fn apply_patch(opt: &Options) -> std::io::Result<()> {
         // And save the patched file.
         println!("Patch applied.");
         let mut patch_filename = opt.input.clone();
-        patch_filename.set_extension("patched");
+        patch_filename.set_file_name(format!(
+            "{}_patched",
+            &patch_filename.file_name().unwrap().to_str().unwrap()
+        ));
         fs::write(&patch_filename, &result)?;
     }
     Ok(())
