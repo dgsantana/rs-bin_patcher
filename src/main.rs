@@ -3,7 +3,14 @@ use clap::arg_enum;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+
+use clap::arg_enum;
+use snafu::{ResultExt, Snafu};
 use structopt::StructOpt;
+
+mod patch;
+
+use patch::{Patch, PatchSection};
 
 arg_enum! {
     #[derive(Debug)]
@@ -52,23 +59,59 @@ struct Options {
     output: Option<PathBuf>,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Debug, Default)]
-struct Patch {
-    sections: Vec<PatchSection>,
+#[derive(Debug, Snafu)]
+enum Error {
+    #[snafu(display("Unable to read source file {}: {}", path.display(), source))]
+    ReadSource {
+        source: std::io::Error,
+        path: PathBuf,
+    },
+    #[snafu(display("Unable to read transformed file {}: {}", path.display(), source))]
+    ReadTarget {
+        source: std::io::Error,
+        path: PathBuf,
+    },
+    #[snafu(display("Unable to read test file for growing search data {}: {}", path.display(), source))]
+    ReadTest {
+        source: std::io::Error,
+        path: PathBuf,
+    },
+    #[snafu(display(
+        "Source and transformed file have different sizes {}!={}: {}",
+        source_size,
+        target_size,
+        source
+    ))]
+    SizeMismatch {
+        source: std::io::Error,
+        source_size: u64,
+        target_size: u64,
+    },
+    #[snafu(display("Unable to read patch file {}: {}", path.display(), source))]
+    ReadPatch {
+        source: std::io::Error,
+        path: PathBuf,
+    },
+    #[snafu(display("Error converting path to json {:?}: {}", patch, source))]
+    SerializePatch {
+        source: serde_json::error::Error,
+        patch: Patch,
+    },
+    #[snafu(display("Unable to write patch file {}: {}", path.display(), source))]
+    WritePatch {
+        source: std::io::Error,
+        path: PathBuf,
+    },
+    #[snafu(display("Unable to write patched file {}: {}", path.display(), source))]
+    WritePatchedFile {
+        source: std::io::Error,
+        path: PathBuf,
+    },
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Debug, Default)]
-struct PatchSection {
-    id: u32,
-    start: usize,
-    end: usize,
-    #[serde(with = "serde_bytes")]
-    search: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    data: Vec<u8>,
-}
+type Result<T, E = Error> = std::result::Result<T, E>;
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<()> {
     let opt = Options::from_args();
     match opt.mode {
         Mode::Diff => {
@@ -81,20 +124,24 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
-fn build_patch(opt: &Options) -> std::io::Result<()> {
-    let input_size = fs::metadata(&opt.input)?;
-    let patched_size = fs::metadata(&opt.patch)?;
+fn build_patch(opt: &Options) -> Result<()> {
+    let input_size = fs::metadata(&opt.input).context(ReadSource { path: &opt.input })?;
+    let patched_size = fs::metadata(&opt.patch).context(ReadTarget { path: &opt.patch })?;
 
     if input_size.len() != patched_size.len() {
         println!("Different file sizes.");
         return Err(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
             "File size mismatch.",
-        ));
+        ))
+        .context(SizeMismatch {
+            source_size: input_size.len(),
+            target_size: patched_size.len(),
+        });
     }
 
-    let input = fs::read(&opt.input)?;
-    let patched = fs::read(&opt.patch)?;
+    let input = fs::read(&opt.input).context(ReadSource { path: &opt.input })?;
+    let patched = fs::read(&opt.patch).context(ReadTarget { path: &opt.patch })?;
 
     let mut patch = Patch::default();
     let mut patching = false;
@@ -195,13 +242,13 @@ fn grow_section(
     input: &[u8],
     patched: &[u8],
     opt: &Options,
-) -> std::io::Result<()> {
+) -> Result<()> {
     let mut new_section = section.clone();
     let max_grow = opt.grow;
     let mut after = 0;
     let mut section_done = false;
     let test_file = match &opt.test {
-        Some(x) => fs::read(x)?,
+        Some(x) => fs::read(x).context(ReadTest { path: x })?,
         None => input.to_vec(),
     };
     let mut strategy = 0;
@@ -355,10 +402,10 @@ fn section_merge(patch: &mut Patch) -> bool {
 }
 
 /// Applies a patch file
-fn apply_patch(opt: &Options) -> std::io::Result<()> {
-    let input = fs::read(&opt.input)?;
+fn apply_patch(opt: &Options) -> Result<()> {
+    let input = fs::read(&opt.input).context(ReadSource { path: &opt.input })?;
     let path = std::path::Path::new(&opt.patch);
-    let patched = fs::read(&opt.patch)?;
+    let patched = fs::read(&opt.patch).context(ReadPatch { path: &opt.patch })?;
 
     // Loads our patch information (can be bincode or json)
     let patch: Patch = if path.extension().unwrap_or_default() == "json" {
