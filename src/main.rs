@@ -1,10 +1,8 @@
 #![warn(clippy::all, rust_2018_idioms)]
 use clap::arg_enum;
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-use clap::arg_enum;
 use snafu::{ResultExt, Snafu};
 use structopt::StructOpt;
 
@@ -58,9 +56,20 @@ struct Options {
     #[structopt(index = 3, name = "FILE3", parse(from_os_str))]
     output: Option<PathBuf>,
 }
+impl From<std::io::Error> for PatchError {
+    fn from(e: std::io::Error) -> Self {
+        PatchError::Io { source: e }
+    }
+}
+
+impl From<serde_json::Error> for PatchError {
+    fn from(e: serde_json::Error) -> Self {
+        PatchError::SerializePatch { source: e }
+    }
+}
 
 #[derive(Debug, Snafu)]
-enum Error {
+enum PatchError {
     #[snafu(display("Unable to read source file {}: {}", path.display(), source))]
     ReadSource {
         source: std::io::Error,
@@ -92,10 +101,9 @@ enum Error {
         source: std::io::Error,
         path: PathBuf,
     },
-    #[snafu(display("Error converting path to json {:?}: {}", patch, source))]
+    #[snafu(display("Error converting path to json: {}", source))]
     SerializePatch {
         source: serde_json::error::Error,
-        patch: Patch,
     },
     #[snafu(display("Unable to write patch file {}: {}", path.display(), source))]
     WritePatch {
@@ -107,11 +115,14 @@ enum Error {
         source: std::io::Error,
         path: PathBuf,
     },
+    Io {
+        source: std::io::Error,
+    },
 }
 
-type Result<T, E = Error> = std::result::Result<T, E>;
+type UnitResult = std::result::Result<(), PatchError>;
 
-fn main() -> Result<()> {
+fn main() -> UnitResult {
     let opt = Options::from_args();
     match opt.mode {
         Mode::Diff => {
@@ -124,7 +135,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn build_patch(opt: &Options) -> Result<()> {
+fn build_patch(opt: &Options) -> UnitResult {
     let input_size = fs::metadata(&opt.input).context(ReadSource { path: &opt.input })?;
     let patched_size = fs::metadata(&opt.patch).context(ReadTarget { path: &opt.patch })?;
 
@@ -242,7 +253,7 @@ fn grow_section(
     input: &[u8],
     patched: &[u8],
     opt: &Options,
-) -> Result<()> {
+) -> UnitResult {
     let mut new_section = section.clone();
     let max_grow = opt.grow;
     let mut after = 0;
@@ -340,14 +351,10 @@ fn grow_section(
 
 /// Append an extra byte from the source files
 fn section_append(section: &mut PatchSection, input: &[u8], patched: &[u8], amount: usize) {
-    let mut after_search = input
-        [(section.end + 1)..=(std::cmp::min(section.end + amount, input.len()))]
-        .to_vec()
-        .clone();
-    let mut after_data = patched
-        [(section.end + 1)..=(std::cmp::min(section.end + amount, input.len()))]
-        .to_vec()
-        .clone();
+    let mut after_search =
+        input[(section.end + 1)..=(std::cmp::min(section.end + amount, input.len()))].to_vec();
+    let mut after_data =
+        patched[(section.end + 1)..=(std::cmp::min(section.end + amount, input.len()))].to_vec();
     section.search.append(&mut after_search);
     section.data.append(&mut after_data);
     section.end += amount;
@@ -402,7 +409,7 @@ fn section_merge(patch: &mut Patch) -> bool {
 }
 
 /// Applies a patch file
-fn apply_patch(opt: &Options) -> Result<()> {
+fn apply_patch(opt: &Options) -> UnitResult {
     let input = fs::read(&opt.input).context(ReadSource { path: &opt.input })?;
     let path = std::path::Path::new(&opt.patch);
     let patched = fs::read(&opt.patch).context(ReadPatch { path: &opt.patch })?;
@@ -413,6 +420,8 @@ fn apply_patch(opt: &Options) -> Result<()> {
     } else {
         bincode::deserialize(&patched).unwrap()
     };
+    // let str1 = serde_json::to_string(&patch).unwrap();
+    // fs::write(path.with_extension("json"), str1);
     println!("Sections found: {}", &patch.sections.len());
     let mut section_index = 0;
     let mut i;
@@ -482,7 +491,7 @@ fn apply_patch(opt: &Options) -> Result<()> {
 
     // Add any missing file bytes.
     if i < input.len() {
-        let mut section = input[i..input.len()].to_vec().clone();
+        let mut section = input[i..input.len()].to_vec();
         result.append(&mut section);
     }
 
@@ -494,9 +503,20 @@ fn apply_patch(opt: &Options) -> Result<()> {
         println!("Patch applied.");
         let mut patch_filename = opt.input.clone();
         patch_filename.set_file_name(format!(
-            "{}_patched",
-            &patch_filename.file_name().unwrap().to_str().unwrap()
+            "{}_patched.{}",
+            &patch_filename
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            &patch_filename
+                .extension()
+                .unwrap_or_default()
+                .to_string_lossy()
         ));
+        // patch_filename.set_file_name(format!(
+        //     "{}_patched",
+        //     &patch_filename.file_name().unwrap().to_str().unwrap()
+        // ));
         fs::write(&patch_filename, &result)?;
     }
     Ok(())

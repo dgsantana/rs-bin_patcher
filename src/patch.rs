@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use hex_buffer_serde::{Hex, HexForm};
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug, Default)]
 pub(crate) struct Patch {
@@ -10,8 +11,8 @@ pub(crate) struct PatchSection {
     pub id: u32,
     pub start: usize,
     pub end: usize,
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "HexForm::<Vec<u8>>")]
     pub search: Vec<u8>,
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "HexForm::<Vec<u8>>")]
     pub data: Vec<u8>,
 }
