@@ -210,8 +210,8 @@ fn build_patch(opt: &Options) -> UnitResult {
     if !patch.sections.is_empty() {
         println!("Fixing small sections...");
         for i in 0..patch.sections.len() {
-            let mut section = &mut patch.sections[i];
-            grow_section(&mut section, &input, &patched, opt)?;
+            let section = &mut patch.sections[i];
+            grow_section(section, &input, &patched, opt)?;
         }
         let mut sections: Vec<PatchSection> = patch
             .sections
