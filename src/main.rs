@@ -1,35 +1,28 @@
-#![warn(clippy::all, rust_2018_idioms)]
-use clap::arg_enum;
+#![warn(clippy::all)]
+#![forbid(unsafe_code)]
 use std::fs;
 use std::path::PathBuf;
 
-use snafu::{ResultExt, Snafu};
-use structopt::StructOpt;
+use clap::{Parser, Subcommand};
 
 mod patch;
 
 use patch::{Patch, PatchSection};
+use thiserror::Error;
 
-arg_enum! {
-    #[derive(Debug)]
-    enum Mode {
-        Diff,
-        Patch
-    }
+#[derive(Subcommand)]
+enum Mode {
+    Diff,
+    Patch,
 }
 
-#[derive(Debug, StructOpt)]
-#[structopt(name = "Patcher", about = "Smart patcher")]
+#[derive(Parser)]
+#[command(author, version, about, long_about=None)]
 struct Options {
-    #[structopt(
-        short,
-        long,
-        possible_values = &Mode::variants(),
-        case_insensitive = true,
-        default_value = "Diff"
-    )]
+    #[command(subcommand)]
     mode: Mode,
-    #[structopt(
+
+    #[arg(
         short,
         long,
         default_value = "6",
@@ -47,15 +40,16 @@ struct Options {
         help = "How much to grow and there are many duplicates."
     )]
     grow: usize,
-    #[structopt(short, long, parse(from_os_str))]
+    #[arg(short, long)]
     test: Option<PathBuf>,
-    #[structopt(index = 1, required = true, name = "FILE1", parse(from_os_str))]
+    #[arg(index = 1, required = true, name = "FILE1")]
     input: PathBuf,
-    #[structopt(index = 2, required = true, name = "FILE2", parse(from_os_str))]
+    #[arg(index = 2, required = true, name = "FILE2")]
     patch: PathBuf,
-    #[structopt(index = 3, name = "FILE3", parse(from_os_str))]
+    #[arg(index = 3, name = "FILE3")]
     output: Option<PathBuf>,
 }
+
 impl From<std::io::Error> for PatchError {
     fn from(e: std::io::Error) -> Self {
         PatchError::Io { source: e }
@@ -68,62 +62,24 @@ impl From<serde_json::Error> for PatchError {
     }
 }
 
-#[derive(Debug, Snafu)]
+#[derive(Debug, Error)]
 enum PatchError {
-    #[snafu(display("Unable to read source file {}: {}", path.display(), source))]
-    ReadSource {
-        source: std::io::Error,
-        path: PathBuf,
-    },
-    #[snafu(display("Unable to read transformed file {}: {}", path.display(), source))]
-    ReadTarget {
-        source: std::io::Error,
-        path: PathBuf,
-    },
-    #[snafu(display("Unable to read test file for growing search data {}: {}", path.display(), source))]
-    ReadTest {
-        source: std::io::Error,
-        path: PathBuf,
-    },
-    #[snafu(display(
-        "Source and transformed file have different sizes {}!={}: {}",
+    #[error(
+        "Source and transformed file have different sizes {}!={}",
         source_size,
-        target_size,
-        source
-    ))]
-    SizeMismatch {
-        source: std::io::Error,
-        source_size: u64,
-        target_size: u64,
-    },
-    #[snafu(display("Unable to read patch file {}: {}", path.display(), source))]
-    ReadPatch {
-        source: std::io::Error,
-        path: PathBuf,
-    },
-    #[snafu(display("Error converting path to json: {}", source))]
-    SerializePatch {
-        source: serde_json::error::Error,
-    },
-    #[snafu(display("Unable to write patch file {}: {}", path.display(), source))]
-    WritePatch {
-        source: std::io::Error,
-        path: PathBuf,
-    },
-    #[snafu(display("Unable to write patched file {}: {}", path.display(), source))]
-    WritePatchedFile {
-        source: std::io::Error,
-        path: PathBuf,
-    },
-    Io {
-        source: std::io::Error,
-    },
+        target_size
+    )]
+    SizeMismatch { source_size: u64, target_size: u64 },
+    #[error("Error converting path to json: {}", source)]
+    SerializePatch { source: serde_json::error::Error },
+    #[error(transparent)]
+    Io { source: std::io::Error },
 }
 
 type UnitResult = std::result::Result<(), PatchError>;
 
 fn main() -> UnitResult {
-    let opt = Options::from_args();
+    let opt = Options::parse();
     match opt.mode {
         Mode::Diff => {
             build_patch(&opt)?;
@@ -136,23 +92,19 @@ fn main() -> UnitResult {
 }
 
 fn build_patch(opt: &Options) -> UnitResult {
-    let input_size = fs::metadata(&opt.input).context(ReadSource { path: &opt.input })?;
-    let patched_size = fs::metadata(&opt.patch).context(ReadTarget { path: &opt.patch })?;
+    let input_size = fs::metadata(&opt.input)?;
+    let patched_size = fs::metadata(&opt.patch)?;
 
     if input_size.len() != patched_size.len() {
         println!("Different file sizes.");
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "File size mismatch.",
-        ))
-        .context(SizeMismatch {
+        return Err(PatchError::SizeMismatch {
             source_size: input_size.len(),
             target_size: patched_size.len(),
         });
     }
 
-    let input = fs::read(&opt.input).context(ReadSource { path: &opt.input })?;
-    let patched = fs::read(&opt.patch).context(ReadTarget { path: &opt.patch })?;
+    let input = fs::read(&opt.input)?;
+    let patched = fs::read(&opt.patch)?;
 
     let mut patch = Patch::default();
     let mut patching = false;
@@ -259,7 +211,7 @@ fn grow_section(
     let mut after = 0;
     let mut section_done = false;
     let test_file = match &opt.test {
-        Some(x) => fs::read(x).context(ReadTest { path: x })?,
+        Some(x) => fs::read(x)?,
         None => input.to_vec(),
     };
     let mut strategy = 0;
@@ -410,9 +362,9 @@ fn section_merge(patch: &mut Patch) -> bool {
 
 /// Applies a patch file
 fn apply_patch(opt: &Options) -> UnitResult {
-    let input = fs::read(&opt.input).context(ReadSource { path: &opt.input })?;
+    let input = fs::read(&opt.input)?;
     let path = std::path::Path::new(&opt.patch);
-    let patched = fs::read(&opt.patch).context(ReadPatch { path: &opt.patch })?;
+    let patched = fs::read(&opt.patch)?;
 
     // Loads our patch information (can be bincode or json)
     let patch: Patch = if path.extension().unwrap_or_default() == "json" {
